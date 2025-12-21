@@ -1,0 +1,1545 @@
+---
+title: "Simulation for Forest Fire Model——Hu Shijie"
+output: html_notebook
+---
+
+### **Part 1: Basic Forest Fire Model**
+
+```{r}
+# ----------------------------
+# 1️⃣ 加载库
+# ----------------------------
+library(ggplot2)
+library(reshape2)
+library(gganimate)
+
+# ----------------------------
+# 2️⃣ 参数与网格初始化
+# ----------------------------
+N <- 100          # 网格大小
+alpha <- 0.5      # 感染概率
+beta <- 0.1       # 烧尽概率
+timesteps <- 50   # 模拟步数
+
+# 状态编码：2=易燃，1=着火，0=烧尽
+X <- matrix(2, nrow=N, ncol=N)
+
+# 多起火源（中心附近5个格子随机着火）
+set.seed(42)
+center <- N %/% 2
+fire_indices <- expand.grid(x=(center-1):(center+1), y=(center-1):(center+1))
+fire_indices <- fire_indices[sample(1:nrow(fire_indices), 5), ]
+for(k in 1:nrow(fire_indices)){
+  X[fire_indices$x[k], fire_indices$y[k]] <- 1
+}
+
+# ----------------------------
+# 3️⃣ 八邻居函数
+# ----------------------------
+get_neighbors <- function(i,j,N){
+  neighbors <- expand.grid(x=(i-1):(i+1), y=(j-1):(j+1))
+  neighbors <- neighbors[!(neighbors$x==i & neighbors$y==j), ]
+  neighbors <- neighbors[neighbors$x>=1 & neighbors$x<=N &
+                         neighbors$y>=1 & neighbors$y<=N, ]
+  return(as.matrix(neighbors))
+}
+
+# ----------------------------
+# 4️⃣ 火灾传播函数
+# ----------------------------
+spread_fire <- function(X, alpha, beta){
+  N <- nrow(X)
+  X_new <- X
+  for(i in 1:N){
+    for(j in 1:N){
+      if(X[i,j]==1){  # infected
+        neighbors <- get_neighbors(i,j,N)
+        for(k in 1:nrow(neighbors)){
+          ni <- neighbors[k,1]
+          nj <- neighbors[k,2]
+          if(X[ni,nj]==2){  # susceptible neighbor
+            if(runif(1)<alpha){
+              X_new[ni,nj] <- 1
+            }
+          }
+        }
+        if(runif(1)<beta){  # infected becomes removed
+          X_new[i,j] <- 0
+        }
+      }
+    }
+  }
+  return(X_new)
+}
+
+# ----------------------------
+# 5️⃣ 记录每步状态用于动画
+# ----------------------------
+X_list <- list()
+X_list[[1]] <- X
+for(t in 2:timesteps){
+  X <- spread_fire(X, alpha, beta)
+  X_list[[t]] <- X
+}
+
+# ----------------------------
+# 6️⃣ 转为动画数据框
+# ----------------------------
+df_all <- do.call(rbind, lapply(1:timesteps, function(t){
+  df <- melt(X_list[[t]])
+  df$time <- t
+  df
+}))
+
+# ----------------------------
+# 7️⃣ 绘制动态动画
+# ----------------------------
+p <- ggplot(df_all, aes(x=Var2, y=Var1, fill=factor(value))) +
+  geom_tile(color="grey") +
+  scale_fill_manual(values=c("black","red","green"),
+                    labels=c("Removed","Infected","Susceptible")) +
+  coord_fixed() +
+  theme_minimal() +
+  theme(axis.text=element_blank(),
+        axis.title=element_blank(),
+        axis.ticks=element_blank()) +
+  labs(fill="State") +
+  transition_time(time) +
+  ggtitle('Time step: {frame_time}')
+
+animate(p, nframes=timesteps, fps=1, width=600, height=600)
+```
+
+```{r}
+# ----------------------------
+# 3️⃣ Part 1b & 1c: 参数探索
+# ----------------------------
+alphas <- c(0.1, 0.3, 0.5, 0.7)
+betas <- c(0.05, 0.1, 0.2, 0.3)
+results <- expand.grid(alpha=alphas, beta=betas)
+results$final_burned <- NA
+
+set.seed(123)
+for(i in 1:nrow(results)){
+  a <- results$alpha[i]
+  b <- results$beta[i]
+  X <- matrix(2, N, N)
+  fire_indices <- expand.grid(x=(center-1):(center+1), y=(center-1):(center+1))
+  fire_indices <- fire_indices[sample(1:nrow(fire_indices), 5), ]
+  for(k in 1:nrow(fire_indices)) X[fire_indices$x[k], fire_indices$y[k]] <- 1
+  for(t in 1:timesteps){
+    X <- spread_fire(X, a, b)
+  }
+  results$final_burned[i] <- sum(X==0) / (N*N)  # 烧尽比例
+}
+
+print(results)
+
+# ----------------------------
+# 热力图可视化最终烧尽比例（Part 1c）
+# ----------------------------
+ggplot(results, aes(x=factor(alpha), y=factor(beta), fill=final_burned)) +
+  geom_tile() +
+  scale_fill_gradient(low="white", high="red") +
+  labs(title="Final Burned Proportion by alpha/beta",
+       x="Infection Probability (alpha)",
+       y="Removal Probability (beta)",
+       fill="Burned Proportion") +
+  theme_minimal()
+
+alpha_beta_results <- results
+```
+
+### **Part 2: Enhanced Forest Fire Model**
+
+$$
+p = \frac{1}{1 + \exp\Big(- \big( \text{logit}(\alpha) + \gamma \, w \, \cos\theta + \delta \, w \big) \Big)} 
+$$
+
+Wind Strength
+
+```{r}
+library(ggplot2)
+
+# ----------------------------
+# 参数设置
+# ----------------------------
+N <- 25
+timesteps <- 5
+alpha <- 0.3
+beta <- 0.1
+wind_dx <- 1
+wind_dy <- 0
+gamma <- 0.1
+delta <- 0.05
+max_wind_range <- 6
+center <- N %/% 2
+wind_values <- c(0, 50, 100)
+num_simulations <- 50  # 设置模拟次数
+
+# ----------------------------
+# 生成邻居偏移函数
+# ----------------------------
+generate_neighbors <- function(w){
+  offsets <- expand.grid(dx=-1:1, dy=-1:1)
+  offsets <- offsets[!(offsets$dx==0 & offsets$dy==0), ]
+  r_max <- min(max_wind_range, 1 + ceiling(w/20))
+  for(r in 2:r_max){
+    offsets <- rbind(offsets, data.frame(dx=r*wind_dx, dy=r*wind_dy))
+  }
+  return(offsets)
+}
+
+# ----------------------------
+# 火灾传播函数
+# ----------------------------
+spread_fire_wind <- function(X, alpha, beta, w){
+  N <- nrow(X)
+  X_new <- X
+  logit_alpha <- log(alpha/(1-alpha))
+  neighbor_offsets <- generate_neighbors(w)
+  
+  for(i in 1:N){
+    for(j in 1:N){
+      if(X[i,j]==1){
+        for(n_idx in seq_len(nrow(neighbor_offsets))){
+          ni <- i + neighbor_offsets$dx[n_idx]
+          nj <- j + neighbor_offsets$dy[n_idx]
+          if(ni>=1 && ni<=N && nj>=1 && nj<=N && X[ni,nj]==2){
+            dx <- ni - i
+            dy <- nj - j
+            dot <- dx*wind_dx + dy*wind_dy
+            norm <- sqrt(dx^2 + dy^2) * sqrt(wind_dx^2 + wind_dy^2)
+            cos_theta <- if(norm==0) 0 else dot/norm
+            prob <- 1/(1 + exp(-(logit_alpha + gamma*w*cos_theta + delta*w)))
+            if(runif(1)<prob) X_new[ni,nj] <- 1
+          }
+        }
+        if(runif(1)<beta) X_new[i,j] <- 0
+      }
+    }
+  }
+  return(X_new)
+}
+
+# ----------------------------
+# 模拟并整理数据
+# ----------------------------
+df_all <- data.frame()
+burned_summary <- data.frame()
+all_burned_ratios <- data.frame()  # 用来存储每次模拟的烧毁比例
+
+# 记录每个风速下的平均焚烧比例
+for(w in wind_values){
+  burned_ratios <- numeric(num_simulations)  # 存储每次模拟的烧毁比例
+  
+  for(sim in 1:num_simulations){  # 多次模拟
+    X <- matrix(2,N,N)
+    fire_indices <- expand.grid(x=(center-1):(center+1), y=(center-1):(center+1))
+    for(k_idx in seq_len(nrow(fire_indices))) X[fire_indices$x[k_idx], fire_indices$y[k_idx]] <- 1
+    
+    for(t in 1:timesteps){
+      X <- spread_fire_wind(X, alpha, beta, w)
+    }
+    
+    # 记录每次模拟的烧毁比例
+    burned_ratios[sim] <- sum(X==0)/(N*N)
+    
+    # 只记录一次模拟结果（选取第一个模拟结果）
+    if(sim == 1){
+      df <- expand.grid(x=1:N, y=1:N)
+      df$state <- as.factor(as.vector(X))
+      df$wind <- paste0("Wind=", w, " (E)")  # 标题里显示风向
+      df_all <- rbind(df_all, df)
+    }
+  }
+  
+  # 计算每个风速的平均焚烧比例
+  avg_burned_ratio <- mean(burned_ratios)
+  burned_summary <- rbind(burned_summary, data.frame(wind=w, burned=avg_burned_ratio))
+  
+  # 保存所有模拟的焚烧比例
+  all_burned_ratios <- rbind(all_burned_ratios, data.frame(wind=rep(w, num_simulations), burned=burned_ratios))
+}
+
+# ----------------------------
+# 网格图（只展示一个模拟结果）
+# ----------------------------
+ggplot(df_all, aes(x=x, y=y, fill=state)) +
+  geom_tile(color="gray") +
+  scale_fill_manual(values=c("black","red","green")) +
+  facet_wrap(~wind, ncol=3) +  # 展示不同风速下的火灾传播
+  labs(title="Forest Fire Simulation with Different Wind Strengths (Wind Direction: E)") +
+  theme_minimal() +
+  coord_fixed() +
+  theme(axis.text=element_blank(), axis.ticks=element_blank(),
+        strip.text=element_text(size=12))
+
+# ----------------------------
+# 条形图显示每个风速的平均焚烧比例
+# ----------------------------
+ggplot(burned_summary, aes(x=factor(wind), y=burned, fill=factor(wind))) +
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values=c("lightblue","orange","red")) +
+  labs(title="Average Burned Area vs Wind Strength",
+       x="Wind Strength",
+       y="Average Burned Ratio") +
+  theme_minimal()
+
+# ----------------------------
+# 箱型图展示每个风速下焚烧比例的分布情况
+# ----------------------------
+ggplot(all_burned_ratios, aes(x=factor(wind), y=burned, fill=factor(wind))) +
+  geom_boxplot(outlier.colour = "red", outlier.size = 2) +  # 高亮显示异常值
+  scale_fill_manual(values=c("lightblue", "orange", "red")) +  # 设置颜色
+  labs(title="Burned Area Distribution vs Wind Strength",
+       x="Wind Strength",
+       y="Burned Ratio") +
+  theme_minimal() +
+  theme(axis.text=element_text(size=12), axis.title=element_text(size=14),
+        strip.text=element_text(size=12), legend.position="none")
+
+# ----------------------------
+# 折线图展示每个风速下每次模拟的焚烧比例
+# ----------------------------
+ggplot(all_burned_ratios, aes(x=seq_along(burned), y=burned, group=wind, color=factor(wind))) +
+  geom_line(alpha=0.5) +
+  labs(title="Burned Area per Simulation vs Wind Strength",
+       x="Simulation Number",
+       y="Burned Ratio") +
+  theme_minimal() +
+  scale_color_manual(values=c("lightblue", "orange", "red")) +
+  theme(axis.text=element_text(size=12), axis.title=element_text(size=14))
+
+# ----------------------------
+# 保存数据
+# ----------------------------
+burned_summary_wind <- burned_summary
+
+```
+
+```{r}
+library(ggplot2)
+
+# ----------------------------
+# 参数设置
+# ----------------------------
+N <- 25
+timesteps <- 5
+alpha_values <- c(0.2, 0.3, 0.4)  # 使用 3 个 alpha 值
+beta_values <- c(0.1, 0.2, 0.3)   # 使用 3 个 beta 值
+wind_dx <- 1
+wind_dy <- 0
+gamma <- 0.1
+delta <- 0.05
+max_wind_range <- 6
+center <- N %/% 2
+wind_values <- c(0, 50, 100)  # 风速 0, 50, 100
+num_simulations <- 50  # 设置模拟次数
+
+# ----------------------------
+# 生成邻居偏移函数
+# ----------------------------
+generate_neighbors <- function(w){
+  offsets <- expand.grid(dx=-1:1, dy=-1:1)
+  offsets <- offsets[!(offsets$dx==0 & offsets$dy==0), ]
+  r_max <- min(max_wind_range, 1 + ceiling(w/20))
+  for(r in 2:r_max){
+    offsets <- rbind(offsets, data.frame(dx=r*wind_dx, dy=r*wind_dy))
+  }
+  return(offsets)
+}
+
+# ----------------------------
+# 火灾传播函数
+# ----------------------------
+spread_fire_wind <- function(X, alpha, beta, w){
+  N <- nrow(X)
+  X_new <- X
+  logit_alpha <- log(alpha/(1-alpha))
+  neighbor_offsets <- generate_neighbors(w)
+  
+  for(i in 1:N){
+    for(j in 1:N){
+      if(X[i,j]==1){
+        for(n_idx in seq_len(nrow(neighbor_offsets))){
+          ni <- i + neighbor_offsets$dx[n_idx]
+          nj <- j + neighbor_offsets$dy[n_idx]
+          if(ni>=1 && ni<=N && nj>=1 && nj<=N && X[ni,nj]==2){
+            dx <- ni - i
+            dy <- nj - j
+            dot <- dx*wind_dx + dy*wind_dy
+            norm <- sqrt(dx^2 + dy^2) * sqrt(wind_dx^2 + wind_dy^2)
+            cos_theta <- if(norm==0) 0 else dot/norm
+            prob <- 1/(1 + exp(-(logit_alpha + gamma*w*cos_theta + delta*w)))
+            if(runif(1)<prob) X_new[ni,nj] <- 1
+          }
+        }
+        if(runif(1)<beta) X_new[i,j] <- 0
+      }
+    }
+  }
+  return(X_new)
+}
+
+# ----------------------------
+# 模拟并整理数据
+# ----------------------------
+df_all <- data.frame()
+burned_summary <- data.frame()
+all_burned_ratios <- data.frame()  # 用来存储每次模拟的烧毁比例
+
+# 记录每个风速下的平均焚烧比例
+for(w in wind_values){
+  for(alpha in alpha_values){   # 新增不同的 alpha 和 beta 组合
+    for(beta in beta_values){
+      burned_ratios <- numeric(num_simulations)  # 存储每次模拟的烧毁比例
+      
+      for(sim in 1:num_simulations){  # 多次模拟
+        X <- matrix(2, N, N)
+        fire_indices <- expand.grid(x=(center-1):(center+1), y=(center-1):(center+1))
+        for(k_idx in seq_len(nrow(fire_indices))) X[fire_indices$x[k_idx], fire_indices$y[k_idx]] <- 1
+        
+        for(t in 1:timesteps){
+          X <- spread_fire_wind(X, alpha, beta, w)
+        }
+        
+        # 记录每次模拟的烧毁比例
+        burned_ratios[sim] <- sum(X==0)/(N*N)
+        
+        # 只记录一次模拟结果（选取第一个模拟结果）
+        if(sim == 1){
+          df <- expand.grid(x=1:N, y=1:N)
+          df$state <- as.factor(as.vector(X))
+          df$wind <- paste0("Wind=", w, " (E)")  # 标题里显示风向
+          df$alpha <- alpha  # 添加 alpha
+          df$beta <- beta     # 添加 beta
+          df_all <- rbind(df_all, df)
+        }
+      }
+      
+      # 计算每个风速的平均焚烧比例
+      avg_burned_ratio <- mean(burned_ratios)
+      burned_summary <- rbind(burned_summary, data.frame(wind=w, alpha=alpha, beta=beta, burned=avg_burned_ratio))
+      
+      # 保存所有模拟的焚烧比例
+      all_burned_ratios <- rbind(all_burned_ratios, data.frame(wind=rep(w, num_simulations), alpha=rep(alpha, num_simulations), beta=rep(beta, num_simulations), burned=burned_ratios))
+    }
+  }
+}
+
+# ----------------------------
+# 颜色设置，提供 9 种颜色
+# ----------------------------
+color_palette <- c("lightblue", "orange", "red", "green", "purple", "yellow", "pink", "lightgreen", "cyan")
+
+# ----------------------------
+# 生成柱状图展示不同风力下每个组合的焚烧比例
+# ----------------------------
+ggplot(burned_summary, aes(x=factor(wind), y=burned, fill=factor(interaction(alpha, beta)))) +
+  geom_bar(stat="identity", color="black", position="dodge") +
+  scale_fill_manual(values=color_palette) +  # 使用手动指定的 9 种颜色
+  labs(title="Average Burned Area vs Wind Strength with Different Alpha and Beta Combinations",
+       x="Wind Strength",
+       y="Average Burned Ratio") +
+  theme_minimal()
+
+# ----------------------------
+# 生成箱型图展示每个风速下焚烧比例的分布情况（包括 alpha 和 beta 组合）
+# ----------------------------
+ggplot(all_burned_ratios, aes(x=factor(wind), y=burned, fill=factor(interaction(alpha, beta)))) +
+  geom_boxplot(outlier.colour = "red", outlier.size = 2) +  # 高亮显示异常值
+  scale_fill_manual(values=color_palette) +  # 使用手动指定的 9 种颜色
+  labs(title="Burned Area Distribution vs Wind Strength with Different Alpha and Beta Combinations",
+       x="Wind Strength",
+       y="Burned Ratio") +
+  theme_minimal() +
+  theme(axis.text=element_text(size=12), axis.title=element_text(size=14),
+        strip.text=element_text(size=12), legend.position="none")
+
+# ----------------------------
+# 生成折线图展示每个风速下每次模拟的焚烧比例（包括 alpha 和 beta 组合）
+# ----------------------------
+ggplot(all_burned_ratios, aes(x=seq_along(burned), y=burned, group=interaction(wind, alpha, beta), color=factor(interaction(alpha, beta)))) +
+  geom_line(alpha=0.5) +
+  labs(title="Burned Area per Simulation vs Wind Strength with Different Alpha and Beta Combinations",
+       x="Simulation Number",
+       y="Burned Ratio") +
+  theme_minimal() +
+  scale_color_manual(values=color_palette) +  # 使用手动指定的 9 种颜色
+  theme(axis.text=element_text(size=12), axis.title=element_text(size=14))
+
+```
+
+Wind Direction
+
+```{r}
+library(ggplot2)
+
+# ----------------------------
+# 参数设置
+# ----------------------------
+N <- 25
+timesteps <- 5
+alpha <- 0.3
+beta <- 0.1
+wind_strength <- 50  # 固定风力
+gamma <- 0.1
+delta <- 0.05
+max_wind_range <- 6
+center <- N %/% 2
+num_simulations <- 50  # 设置模拟次数
+
+# ----------------------------
+# 正确的风向向量（ggplot 坐标系：y 向上 = 北）
+# ----------------------------
+wind_list <- list(
+  E  = c(1, 0),     # 东：向右
+  W  = c(-1, 0),    # 西：向左
+  N  = c(0, 1),     # 北：向上
+  S  = c(0, -1),    # 南：向下
+  NE = c(1, 1),     # 东北：右上
+  NW = c(-1, 1),    # 西北：左上
+  SE = c(1, -1),    # 东南：右下
+  SW = c(-1, -1)    # 西南：左下
+)
+
+# ----------------------------
+# 生成邻居偏移函数
+# ----------------------------
+generate_neighbors <- function(w, wind_dx, wind_dy){
+  offsets <- expand.grid(dx=-1:1, dy=-1:1)
+  offsets <- offsets[!(offsets$dx==0 & offsets$dy==0), ]
+  r_max <- min(max_wind_range, 1 + ceiling(w/20))
+  for(r in 2:r_max){
+    offsets <- rbind(offsets, data.frame(dx=r*wind_dx, dy=r*wind_dy))
+  }
+  offsets
+}
+
+# ----------------------------
+# 火灾传播函数
+# ----------------------------
+spread_fire_wind <- function(X, alpha, beta, w, wind_dx, wind_dy){
+  N <- nrow(X)
+  X_new <- X
+  logit_alpha <- log(alpha/(1-alpha))
+  neighbor_offsets <- generate_neighbors(w, wind_dx, wind_dy)
+  
+  for(i in 1:N){
+    for(j in 1:N){
+      if(X[i,j]==1){
+        for(n_idx in seq_len(nrow(neighbor_offsets))){
+          ni <- i + neighbor_offsets$dx[n_idx]
+          nj <- j + neighbor_offsets$dy[n_idx]
+          if(ni>=1 && ni<=N && nj>=1 && nj<=N && X[ni,nj]==2){
+            dx <- ni - i
+            dy <- nj - j
+            dot <- dx*wind_dx + dy*wind_dy
+            norm <- sqrt(dx^2 + dy^2) * sqrt(wind_dx^2 + wind_dy^2)
+            cos_theta <- if(norm==0) 0 else dot/norm
+            prob <- 1/(1 + exp(-(logit_alpha + gamma*w*cos_theta + delta*w)))
+            if(runif(1)<prob) X_new[ni,nj] <- 1
+          }
+        }
+        if(runif(1)<beta) X_new[i,j] <- 0
+      }
+    }
+  }
+  X_new
+}
+
+# ----------------------------
+# 模拟所有风向
+# ----------------------------
+df_all <- data.frame()
+burned_summary <- data.frame()
+all_burned_ratios <- data.frame()  # 用来存储每次模拟的烧毁比例
+
+for(name in names(wind_list)){
+  wind_vec <- wind_list[[name]]
+  
+  burned_ratios <- numeric(num_simulations)  # 存储每次模拟的烧毁比例
+  
+  for(sim in 1:num_simulations){  # 多次模拟
+    X <- matrix(2,N,N)
+    fire_indices <- expand.grid(x=(center-1):(center+1), y=(center-1):(center+1))
+    for(k_idx in seq_len(nrow(fire_indices))) X[fire_indices$x[k_idx], fire_indices$y[k_idx]] <- 1
+    
+    for(t in 1:timesteps){
+      X <- spread_fire_wind(X, alpha, beta, wind_strength, wind_vec[1], wind_vec[2])
+    }
+    
+    # 记录每次模拟的烧毁比例
+    burned_ratios[sim] <- sum(X==0)/(N*N)
+    
+    # 只记录一次模拟结果（选取第一个模拟结果）
+    if(sim == 1){
+      df <- expand.grid(x=1:N, y=1:N)
+      df$state <- as.factor(as.vector(X))
+      df$wind <- paste0("Wind: ", name)
+      df_all <- rbind(df_all, df)
+    }
+  }
+  
+  # 计算每个风向的平均焚烧比例
+  avg_burned_ratio <- mean(burned_ratios)
+  burned_summary <- rbind(burned_summary, data.frame(wind=name, burned=avg_burned_ratio))
+  
+  # 保存所有模拟的焚烧比例
+  all_burned_ratios <- rbind(all_burned_ratios, data.frame(wind=rep(name, num_simulations), burned=burned_ratios))
+}
+
+# ----------------------------
+# 网格图（火灾分布）
+# ----------------------------
+ggplot(df_all, aes(x=x, y=y, fill=state)) +
+  geom_tile(color="gray") +
+  scale_fill_manual(values=c("black","red","green")) +
+  facet_wrap(~wind, ncol=4) +
+  labs(title="Forest Fire Simulation (Correct Wind Directions)",
+       x=NULL, y=NULL) +
+  theme_minimal() +
+  coord_fixed() +
+  theme(axis.text=element_blank(), axis.ticks=element_blank(),
+        strip.text=element_text(size=12))
+
+# ----------------------------
+# 烧毁面积条形图
+# ----------------------------
+ggplot(burned_summary, aes(x=factor(wind), y=burned, fill=factor(wind))) +
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values=c("lightblue","orange","red","purple","pink","brown","yellow","green")) +
+  labs(title="Burned Area Ratio by Wind Direction",
+       x="Wind Direction", y="Burned Ratio") +
+  theme_minimal()
+
+# ----------------------------
+# 箱型图展示每个风速下焚烧比例的分布情况
+# ----------------------------
+ggplot(all_burned_ratios, aes(x=factor(wind), y=burned, fill=factor(wind))) +
+  geom_boxplot(outlier.colour = "red", outlier.size = 2) +  # 高亮显示异常值
+  scale_fill_manual(values=c("lightblue", "orange", "red", "purple", "pink", "brown", "yellow", "green")) +  # 设置颜色
+  labs(title="Burned Area Distribution by Wind Direction",
+       x="Wind Direction",
+       y="Burned Ratio") +
+  theme_minimal() +
+  theme(axis.text=element_text(size=12), axis.title=element_text(size=14),
+        strip.text=element_text(size=12), legend.position="none")
+
+# ----------------------------
+# 折线图展示每个风向下每次模拟的焚烧比例
+# ----------------------------
+ggplot(all_burned_ratios, aes(x=seq_along(burned), y=burned, group=wind, color=factor(wind))) +
+  geom_line(alpha=0.5) +
+  labs(title="Burned Area per Simulation vs Wind Direction",
+       x="Simulation Number",
+       y="Burned Ratio") +
+  theme_minimal() +
+  scale_color_manual(values=c("lightblue", "orange", "red", "purple", "pink", "brown", "yellow", "green")) +
+  theme(axis.text=element_text(size=12), axis.title=element_text(size=14))
+
+# ----------------------------
+# 保存数据
+# ----------------------------
+burned_summary_dir <- burned_summary
+
+```
+
+Ember
+
+```{r}
+library(ggplot2)
+
+# ----------------------------
+# 参数设置
+# ----------------------------
+N <- 60
+timesteps <- 7
+alpha <- 0.3
+beta <- 0.1
+wind_strength <- 50
+wind_dx <- 1
+wind_dy <- 0
+gamma <- 0.1
+delta <- 0.05
+max_wind_range <- 6
+center <- N %/% 2
+num_simulations <- 50  # 设置模拟次数
+
+# ----------------------------
+# 生成邻居偏移函数
+# ----------------------------
+generate_neighbors <- function(w, wind_dx, wind_dy) {
+  offsets <- expand.grid(dx = -1:1, dy = -1:1)
+  offsets <- offsets[!(offsets$dx == 0 & offsets$dy == 0), ]
+  
+  r_max <- min(max_wind_range, 1 + ceiling(w / 20))
+  for (r in 2:r_max) {
+    offsets <- rbind(offsets, data.frame(dx = r * wind_dx, dy = r * wind_dy))
+  }
+  offsets
+}
+
+# ----------------------------
+# 火灾传播函数（可控制 ember）
+# ----------------------------
+spread_fire <- function(X, alpha, beta, w, wind_dx, wind_dy, ember = TRUE) {
+  N <- nrow(X)
+  X_new <- X
+  logit_alpha <- log(alpha / (1 - alpha))
+  neighbor_offsets <- generate_neighbors(w, wind_dx, wind_dy)
+  
+  for (i in 1:N) {
+    for (j in 1:N) {
+      if (X[i, j] == 1) {  # 普通蔓延
+        for (n_idx in seq_len(nrow(neighbor_offsets))) {
+          ni <- i + neighbor_offsets$dx[n_idx]
+          nj <- j + neighbor_offsets$dy[n_idx]
+          
+          if (ni >= 1 && ni <= N && nj >= 1 && nj <= N && X[ni, nj] == 2) {
+            dx <- ni - i
+            dy <- nj - j
+            dot <- dx * wind_dx + dy * wind_dy
+            norm <- sqrt(dx^2 + dy^2) * sqrt(wind_dx^2 + wind_dy^2)
+            cos_theta <- ifelse(norm == 0, 0, dot / norm)
+            prob <- 1 / (1 + exp(-(logit_alpha + gamma * w * cos_theta + delta * w)))
+            if (runif(1) < prob) X_new[ni, nj] <- 1
+          }
+        }
+        
+        # 生成远程火星
+        if (ember) {  # 随机远程火点，距离 up to 3 格子
+          r_ember <- sample(2:3, 1)
+          ni <- i + r_ember * wind_dx
+          nj <- j + r_ember * wind_dy
+          if (ni >= 1 && ni <= N && nj >= 1 && nj <= N && X_new[ni, nj] == 2) {
+            X_new[ni, nj] <- 1
+          }
+        }
+        
+        # 原火熄灭概率
+        if (runif(1) < beta) X_new[i, j] <- 0
+      }
+    }
+  }
+  
+  X_new
+}
+
+# ----------------------------
+# 模拟有/无 ember
+# ----------------------------
+scenarios <- c("No Ember", "With Ember")
+df_all <- data.frame()
+burned_summary <- data.frame()
+all_burned_ratios <- data.frame()  # 用来存储每次模拟的烧毁比例
+
+for (scenario in scenarios) {
+  burned_ratios <- numeric(num_simulations)  # 存储每次模拟的烧毁比例
+  
+  for (sim in 1:num_simulations) {
+    # 多次模拟
+    X <- matrix(2, N, N)
+    fire_indices <- expand.grid(x = (center - 1):(center + 1), y = (center - 1):(center + 1))
+    
+    for (k_idx in seq_len(nrow(fire_indices))) {
+      X[fire_indices$x[k_idx], fire_indices$y[k_idx]] <- 1
+    }
+    
+    for (t in 1:timesteps) {
+      X <- spread_fire(X, alpha, beta, wind_strength, wind_dx, wind_dy, ember = (scenario == "With Ember"))
+    }
+    
+    # 记录每次模拟的烧毁比例
+    burned_ratios[sim] <- sum(X == 0) / (N * N)
+    
+    # 只记录一次模拟结果（选取第一个模拟结果）
+    if (sim == 1) {
+      df <- expand.grid(x = 1:N, y = 1:N)
+      df$state <- as.factor(as.vector(X))
+      df$scenario <- scenario
+      df_all <- rbind(df_all, df)
+    }
+  }
+  
+  # 计算每个场景的平均焚烧比例
+  avg_burned_ratio <- mean(burned_ratios)
+  burned_summary <- rbind(burned_summary, data.frame(scenario = scenario, burned = avg_burned_ratio))
+  
+  # 保存所有模拟的焚烧比例
+  all_burned_ratios <- rbind(all_burned_ratios, data.frame(scenario = rep(scenario, num_simulations), burned = burned_ratios))
+}
+
+# ----------------------------
+# 网格图
+# ----------------------------
+ggplot(df_all, aes(x = x, y = y, fill = state)) +
+  geom_tile(color = "gray") +
+  scale_fill_manual(values = c("black", "red", "green")) +
+  facet_wrap(~scenario, ncol = 2) +
+  labs(title = "Forest Fire Simulation: Ember vs No Ember", x = NULL, y = NULL) +
+  theme_minimal() +
+  coord_fixed() +
+  theme(axis.text = element_blank(), axis.ticks = element_blank(), strip.text = element_text(size = 12))
+
+# ----------------------------
+# 条形图显示烧毁比例
+# ----------------------------
+ggplot(burned_summary, aes(x = scenario, y = burned, fill = scenario)) +
+  geom_bar(stat = "identity", color = "black") +
+  scale_fill_manual(values = c("lightblue", "orange")) +
+  labs(title = "Burned Area Comparison: Ember vs No Ember", x = "Scenario", y = "Burned Ratio") +
+  theme_minimal()
+
+# ----------------------------
+# 箱型图展示每个场景下焚烧比例的分布情况
+# ----------------------------
+ggplot(all_burned_ratios, aes(x = factor(scenario), y = burned, fill = factor(scenario))) +
+  geom_boxplot(outlier.colour = "red", outlier.size = 2) +  # 高亮显示异常值
+  scale_fill_manual(values = c("lightblue", "orange")) +  # 设置颜色
+  labs(title = "Burned Area Distribution by Scenario", x = "Scenario", y = "Burned Ratio") +
+  theme_minimal() +
+  theme(axis.text = element_text(size = 12), axis.title = element_text(size = 14), strip.text = element_text(size = 12), legend.position = "none")
+
+# ----------------------------
+# 折线图展示每个场景下每次模拟的焚烧比例
+# ----------------------------
+ggplot(all_burned_ratios, aes(x = seq_along(burned), y = burned, group = scenario, color = factor(scenario))) +
+  geom_line(alpha = 0.5) +
+  labs(title = "Burned Area per Simulation vs Scenario", x = "Simulation Number", y = "Burned Ratio") +
+  theme_minimal() +
+  scale_color_manual(values = c("lightblue", "orange")) +
+  theme(axis.text = element_text(size = 12), axis.title = element_text(size = 14))
+
+# ----------------------------
+# 保存数据
+# ----------------------------
+burned_summary_ember <- burned_summary
+
+```
+
+```{r}
+library(ggplot2)
+
+# ----------------------------
+# 参数设置
+# ----------------------------
+N <- 60
+timesteps <- 7
+alpha <- 0.3
+beta <- 0.1
+wind_strengths <- c(10, 20, 50, 100)  # 设置多个风力强度值
+wind_dx <- 1
+wind_dy <- 0
+gamma <- 0.1
+delta <- 0.05
+max_wind_range <- 6
+center <- N %/% 2
+num_simulations <- 70  # 设置模拟次数
+
+# ----------------------------
+# 生成邻居偏移函数
+# ----------------------------
+generate_neighbors <- function(w, wind_dx, wind_dy){
+  offsets <- expand.grid(dx=-1:1, dy=-1:1)
+  offsets <- offsets[!(offsets$dx==0 & offsets$dy==0), ]
+  r_max <- min(max_wind_range, 1 + ceiling(w/20))
+  for(r in 2:r_max){
+    offsets <- rbind(offsets, data.frame(dx=r*wind_dx, dy=r*wind_dy))
+  }
+  offsets
+}
+
+# ----------------------------
+# 火灾传播函数（可控制 ember）
+# ----------------------------
+spread_fire <- function(X, alpha, beta, w, wind_dx, wind_dy, ember=TRUE){
+  N <- nrow(X)
+  X_new <- X
+  logit_alpha <- log(alpha/(1-alpha))
+  neighbor_offsets <- generate_neighbors(w, wind_dx, wind_dy)
+  
+  for(i in 1:N){
+    for(j in 1:N){
+      if(X[i,j]==1){
+        # 普通蔓延
+        for(n_idx in seq_len(nrow(neighbor_offsets))){
+          ni <- i + neighbor_offsets$dx[n_idx]
+          nj <- j + neighbor_offsets$dy[n_idx]
+          if(ni>=1 && ni<=N && nj>=1 && nj<=N && X[ni,nj]==2){
+            dx <- ni - i
+            dy <- nj - j
+            dot <- dx*wind_dx + dy*wind_dy
+            norm <- sqrt(dx^2 + dy^2) * sqrt(wind_dx^2 + wind_dy^2)
+            cos_theta <- if(norm==0) 0 else dot/norm
+            prob <- 1/(1 + exp(-(logit_alpha + gamma*w*cos_theta + delta*w)))
+            if(runif(1)<prob) X_new[ni,nj] <- 1
+          }
+        }
+        # 生成远程火星
+        if(ember){
+          # 随机远程火点，距离 up to 3 格子
+          r_ember <- sample(2:3, 1)
+          ni <- i + r_ember * wind_dx
+          nj <- j + r_ember * wind_dy
+          if(ni>=1 && ni<=N && nj>=1 && nj<=N && X_new[ni,nj]==2){
+            X_new[ni,nj] <- 1
+          }
+        }
+        # 原火熄灭概率
+        if(runif(1)<beta) X_new[i,j] <- 0
+      }
+    }
+  }
+  X_new
+}
+
+# ----------------------------
+# 模拟有/无 ember
+# ----------------------------
+scenarios <- c("No Ember", "With Ember")
+df_all <- data.frame()
+burned_summary <- data.frame()
+all_burned_ratios <- data.frame()  # 用来存储每次模拟的烧毁比例
+
+for(w in wind_strengths) {  # 对不同风力强度进行模拟
+  for(scenario in scenarios){
+    burned_ratios <- numeric(num_simulations)  # 存储每次模拟的烧毁比例
+
+    for(sim in 1:num_simulations){  # 多次模拟
+      X <- matrix(2, N, N)
+      fire_indices <- expand.grid(x=(center-1):(center+1), y=(center-1):(center+1))
+      for(k_idx in seq_len(nrow(fire_indices))) X[fire_indices$x[k_idx], fire_indices$y[k_idx]] <- 1
+
+      for(t in 1:timesteps){
+        X <- spread_fire(X, alpha, beta, w, wind_dx, wind_dy, ember=(scenario=="With Ember"))
+      }
+
+      # 记录每次模拟的烧毁比例
+      burned_ratios[sim] <- sum(X == 0) / (N * N)
+
+      # 只记录一次模拟结果（选取第一个模拟结果）
+      if(sim == 1){
+        df <- expand.grid(x=1:N, y=1:N)
+        df$state <- as.factor(as.vector(X))
+        df$scenario <- scenario
+        df$wind_strength <- w  # 记录风力强度
+        df_all <- rbind(df_all, df)
+      }
+    }
+
+    # 计算每个场景的平均焚烧比例
+    avg_burned_ratio <- mean(burned_ratios)
+    burned_summary <- rbind(burned_summary, data.frame(scenario = scenario, wind_strength = w, burned = avg_burned_ratio))
+
+    # 保存所有模拟的焚烧比例
+    all_burned_ratios <- rbind(all_burned_ratios, data.frame(scenario = rep(scenario, num_simulations), wind_strength = w, burned = burned_ratios))
+  }
+}
+
+# ----------------------------
+# 1. 条形图显示烧毁比例
+# ----------------------------
+ggplot(burned_summary, aes(x = interaction(scenario, wind_strength), y = burned, fill = scenario)) +
+  geom_bar(stat = "identity", color = "black", position = "dodge") +  # 使用dodge调整不同风力强度的条形图分组
+  scale_fill_manual(values = c("lightblue", "orange")) +
+  labs(title = "Burned Area Comparison: Ember vs No Ember with Different Wind Strengths",
+       x = "Scenario and Wind Strength", y = "Burned Ratio") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # 旋转x轴标签，方便显示
+
+# ----------------------------
+# 2. 折线图展示每个场景下每次模拟的焚烧比例
+# ----------------------------
+ggplot(all_burned_ratios, aes(x = seq_along(burned), y = burned, group = interaction(scenario, wind_strength), color = factor(wind_strength))) +
+  geom_line(alpha = 0.5) +
+  labs(title = "Burned Area per Simulation vs Scenario and Wind Strength",
+       x = "Simulation Number", y = "Burned Ratio") +
+  theme_minimal() +
+  scale_color_manual(values = c("lightblue", "orange", "yellow", "green")) +
+  theme(axis.text = element_text(size = 12), axis.title = element_text(size = 14)) 
+
+```
+
+Firefighting
+
+```{r}
+library(ggplot2)
+
+# ----------------------------
+# 参数设置
+# ----------------------------
+N <- 60
+timesteps <- 7
+alpha <- 0.3
+beta <- 0.1
+wind_strength <- 50
+gamma <- 0.1
+delta <- 0.05
+max_wind_range <- 6
+center <- N %/% 2
+phi <- 0.3   # 消防概率
+num_simulations <- 50  # 设置模拟次数
+
+# 风向固定（东风）
+wind_dx <- 1
+wind_dy <- 0
+
+# ----------------------------
+# 生成邻居偏移函数（包含风向扩散范围）
+# ----------------------------
+generate_neighbors <- function(w, wind_dx, wind_dy){
+  offsets <- expand.grid(dx=-1:1, dy=-1:1)
+  offsets <- offsets[!(offsets$dx==0 & offsets$dy==0), ]
+  r_max <- min(max_wind_range, 1 + ceiling(w/20))
+  for(r in 2:r_max){
+    offsets <- rbind(offsets, data.frame(dx=r*wind_dx, dy=r*wind_dy))
+  }
+  offsets
+}
+
+# ----------------------------
+# 火灾传播函数（包含ember + 消防）
+# ----------------------------
+spread_fire_wind_firefighting <- function(X, alpha, beta, w, wind_dx, wind_dy, phi){
+  N <- nrow(X)
+  X_new <- X
+  logit_alpha <- log(alpha/(1-alpha))
+  neighbor_offsets <- generate_neighbors(w, wind_dx, wind_dy)
+  
+  for(i in 1:N){
+    for(j in 1:N){
+      if(X[i,j]==1){
+        # 消防扑灭
+        if(runif(1) < phi){
+          X_new[i,j] <- 2
+          next
+        }
+        for(n_idx in seq_len(nrow(neighbor_offsets))){
+          ni <- i + neighbor_offsets$dx[n_idx]
+          nj <- j + neighbor_offsets$dy[n_idx]
+          if(ni>=1 && ni<=N && nj>=1 && nj<=N && X[ni,nj]==2){
+            dx <- ni - i
+            dy <- nj - j
+            dot <- dx*wind_dx + dy*wind_dy
+            norm <- sqrt(dx^2 + dy^2) * sqrt(wind_dx^2 + wind_dy^2)
+            cos_theta <- if(norm==0) 0 else dot/norm
+            prob <- 1/(1 + exp(-(logit_alpha + gamma*w*cos_theta + delta*w)))
+            if(runif(1) < prob) X_new[ni,nj] <- 1
+          }
+        }
+        if(runif(1) < beta) X_new[i,j] <- 0
+      }
+    }
+  }
+  X_new
+}
+
+# ----------------------------
+# 模拟对比（控制变量，仅改变消防）
+# ----------------------------
+df_all <- data.frame()
+burned_summary <- data.frame()
+all_burned_ratios <- data.frame()  # 用来存储每次模拟的烧毁比例
+scenarios <- c("No Firefighting", "With Firefighting")
+
+for(scenario in scenarios){
+  burned_ratios <- numeric(num_simulations)  # 存储每次模拟的烧毁比例
+  
+  for(sim in 1:num_simulations){  # 多次模拟
+    X <- matrix(2, N, N)
+    fire_indices <- expand.grid(x=(center-1):(center+1), y=(center-1):(center+1))
+    for(k_idx in 1:nrow(fire_indices)) X[fire_indices$x[k_idx], fire_indices$y[k_idx]] <- 1
+    
+    for(t in 1:timesteps){
+      if(scenario == "No Firefighting"){
+        X <- spread_fire_wind_firefighting(X, alpha, beta, wind_strength, wind_dx, wind_dy, phi=0)
+      } else {
+        X <- spread_fire_wind_firefighting(X, alpha, beta, wind_strength, wind_dx, wind_dy, phi=phi)
+      }
+    }
+    
+    # 记录每次模拟的烧毁比例
+    burned_ratios[sim] <- sum(X==0)/(N*N)
+    
+    # 只记录第一次模拟结果（选取第一个模拟结果）
+    if(sim == 1){
+      df <- expand.grid(x=1:N, y=1:N)
+      df$state <- as.factor(as.vector(X))
+      df$scenario <- scenario
+      df_all <- rbind(df_all, df)
+    }
+  }
+  
+  # 计算每个场景的平均焚烧比例
+  avg_burned_ratio <- mean(burned_ratios)
+  burned_summary <- rbind(burned_summary, data.frame(scenario=scenario, burned=avg_burned_ratio))
+  
+  # 保存所有模拟的焚烧比例
+  all_burned_ratios <- rbind(all_burned_ratios, data.frame(scenario=rep(scenario, num_simulations), burned=burned_ratios))
+}
+
+# ----------------------------
+# 网格图：火灾分布
+# ----------------------------
+ggplot(df_all, aes(x=x, y=y, fill=state)) +
+  geom_tile(color="gray") +
+  scale_fill_manual(values=c("black","red","green")) +
+  facet_wrap(~scenario, ncol=2) +
+  labs(title="Forest Fire Simulation (Controlled Variables, Only Firefighting Varies)",
+       x=NULL, y=NULL) +
+  theme_minimal() +
+  coord_fixed() +
+  theme(axis.text=element_blank(), axis.ticks=element_blank(),
+        strip.text=element_text(size=12))
+
+# ----------------------------
+# 条形图：烧毁面积对比
+# ----------------------------
+ggplot(burned_summary, aes(x=scenario, y=burned, fill=scenario)) +
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values=c("orange","lightblue")) +
+  labs(title="Burned Area Ratio (Firefighting Effect)",
+       x="Scenario", y="Burned Ratio") +
+  theme_minimal()
+
+# ----------------------------
+# 箱型图：展示每个场景下焚烧比例的分布
+# ----------------------------
+ggplot(all_burned_ratios, aes(x=factor(scenario), y=burned, fill=factor(scenario))) +
+  geom_boxplot(outlier.colour = "red", outlier.size = 2) +  # 高亮显示异常值
+  scale_fill_manual(values=c("orange", "lightblue")) +  # 设置颜色
+  labs(title="Burned Area Distribution by Scenario",
+       x="Scenario",
+       y="Burned Ratio") +
+  theme_minimal() +
+  theme(axis.text=element_text(size=12), axis.title=element_text(size=14),
+        strip.text=element_text(size=12), legend.position="none")
+
+# ----------------------------
+# 折线图：展示每个场景下每次模拟的焚烧比例
+# ----------------------------
+ggplot(all_burned_ratios, aes(x=seq_along(burned), y=burned, group=scenario, color=factor(scenario))) +
+  geom_line(alpha=0.5) +
+  labs(title="Burned Area per Simulation vs Scenario",
+       x="Simulation Number",
+       y="Burned Ratio") +
+  theme_minimal() +
+  scale_color_manual(values=c("orange", "lightblue")) +
+  theme(axis.text=element_text(size=12), axis.title=element_text(size=14))
+
+# ----------------------------
+# 保存数据
+# ----------------------------
+burned_summary_fire <- burned_summary
+
+```
+
+```{r}
+library(ggplot2)
+library(RColorBrewer)
+
+# ----------------------------
+# 参数设置
+# ----------------------------
+N <- 60
+timesteps <- 7
+alpha <- 0.3
+beta <- 0.1
+wind_strengths <- c(20, 50, 100)  # 轻风、中风、强风
+gamma <- 0.1
+delta <- 0.05
+max_wind_range <- 6
+center <- N %/% 2
+phi_values <- c(0.1, 0.3, 0.5)  # 不同的消防概率
+num_simulations <- 50  # 设置模拟次数
+
+# 风向固定（东风）
+wind_dx <- 1
+wind_dy <- 0
+
+# ----------------------------
+# 生成邻居偏移函数（包含风向扩散范围）
+# ----------------------------
+generate_neighbors <- function(w, wind_dx, wind_dy){
+  offsets <- expand.grid(dx=-1:1, dy=-1:1)
+  offsets <- offsets[!(offsets$dx==0 & offsets$dy==0), ]
+  r_max <- min(max_wind_range, 1 + ceiling(w/20))
+  for(r in 2:r_max){
+    offsets <- rbind(offsets, data.frame(dx=r*wind_dx, dy=r*wind_dy))
+  }
+  offsets
+}
+
+# ----------------------------
+# 火灾传播函数（包含ember + 消防）
+# ----------------------------
+spread_fire_wind_firefighting <- function(X, alpha, beta, w, wind_dx, wind_dy, phi){
+  N <- nrow(X)
+  X_new <- X
+  logit_alpha <- log(alpha/(1-alpha))
+  neighbor_offsets <- generate_neighbors(w, wind_dx, wind_dy)
+  
+  for(i in 1:N){
+    for(j in 1:N){
+      if(X[i,j]==1){
+        # 消防扑灭
+        if(runif(1) < phi){
+          X_new[i,j] <- 2
+          next
+        }
+        for(n_idx in seq_len(nrow(neighbor_offsets))){
+          ni <- i + neighbor_offsets$dx[n_idx]
+          nj <- j + neighbor_offsets$dy[n_idx]
+          if(ni>=1 && ni<=N && nj>=1 && nj<=N && X[ni,nj]==2){
+            dx <- ni - i
+            dy <- nj - j
+            dot <- dx*wind_dx + dy*wind_dy
+            norm <- sqrt(dx^2 + dy^2) * sqrt(wind_dx^2 + wind_dy^2)
+            cos_theta <- if(norm==0) 0 else dot/norm
+            prob <- 1/(1 + exp(-(logit_alpha + gamma*w*cos_theta + delta*w)))
+            if(runif(1) < prob) X_new[ni,nj] <- 1
+          }
+        }
+        if(runif(1) < beta) X_new[i,j] <- 0
+      }
+    }
+  }
+  X_new
+}
+
+# ----------------------------
+# 模拟对比（控制变量，仅改变消防）
+# ----------------------------
+df_all <- data.frame()
+burned_summary <- data.frame()
+all_burned_ratios <- data.frame()  # 用来存储每次模拟的烧毁比例
+scenarios <- c("No Firefighting", "With Firefighting")
+
+for(w in wind_strengths){
+  for(phi_val in phi_values){
+    for(scenario in scenarios){
+      burned_ratios <- numeric(num_simulations)  # 存储每次模拟的烧毁比例
+      
+      for(sim in 1:num_simulations){  # 多次模拟
+        X <- matrix(2, N, N)
+        fire_indices <- expand.grid(x=(center-1):(center+1), y=(center-1):(center+1))
+        for(k_idx in 1:nrow(fire_indices)) X[fire_indices$x[k_idx], fire_indices$y[k_idx]] <- 1
+        
+        for(t in 1:timesteps){
+          if(scenario == "No Firefighting"){
+            X <- spread_fire_wind_firefighting(X, alpha, beta, w, wind_dx, wind_dy, phi=0)
+          } else {
+            X <- spread_fire_wind_firefighting(X, alpha, beta, w, wind_dx, wind_dy, phi=phi_val)
+          }
+        }
+        
+        # 记录每次模拟的烧毁比例
+        burned_ratios[sim] <- sum(X==0)/(N*N)
+        
+        # 只记录第一次模拟结果（选取第一个模拟结果）
+        if(sim == 1){
+          df <- expand.grid(x=1:N, y=1:N)
+          df$state <- as.factor(as.vector(X))
+          df$scenario <- paste("Wind:", w, "- Phi:", phi_val, "-", scenario)
+          df_all <- rbind(df_all, df)
+        }
+      }
+      
+      # 计算每个场景的平均焚烧比例
+      avg_burned_ratio <- mean(burned_ratios)
+      burned_summary <- rbind(burned_summary, data.frame(scenario=paste("Wind:", w, "- Phi:", phi_val, "-", scenario), burned=avg_burned_ratio))
+      
+      # 保存所有模拟的焚烧比例
+      all_burned_ratios <- rbind(all_burned_ratios, data.frame(scenario=rep(paste("Wind:", w, "- Phi:", phi_val, "-", scenario), num_simulations), burned=burned_ratios))
+    }
+  }
+}
+
+# ----------------------------
+# 使用 `RColorBrewer` 自动生成足够的颜色
+# ----------------------------
+colors <- colorRampPalette(brewer.pal(9, "Set1"))(18)  # 使用 `Set1` 调色板并扩展至 18 种颜色
+
+# ----------------------------
+# 条形图：烧毁面积对比
+# ----------------------------
+ggplot(burned_summary, aes(x=scenario, y=burned, fill=scenario)) +
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values=colors) +  # 使用扩展的颜色
+  labs(title="Burned Area Ratio (Firefighting Effect with Wind and Firefighting Probabilities)",
+       x="Scenario", y="Burned Ratio") +
+  theme_minimal() +
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+
+# ----------------------------
+# 箱型图：展示每个场景下焚烧比例的分布
+# ----------------------------
+ggplot(all_burned_ratios, aes(x=factor(scenario), y=burned, fill=factor(scenario))) +
+  geom_boxplot(outlier.colour = "red", outlier.size = 2) +  # 高亮显示异常值
+  scale_fill_manual(values=colors) +  # 使用扩展的颜色
+  labs(title="Burned Area Distribution by Scenario",
+       x="Scenario", y="Burned Ratio") +
+  theme_minimal() +
+  theme(axis.text=element_text(size=12), axis.title=element_text(size=14),
+        strip.text=element_text(size=12), legend.position="none")
+
+# ----------------------------
+# 折线图：展示每个场景下每次模拟的焚烧比例
+# ----------------------------
+ggplot(all_burned_ratios, aes(x=seq_along(burned), y=burned, group=scenario, color=factor(scenario))) +
+  geom_line(alpha=0.5) +
+  labs(title="Burned Area per Simulation vs Scenario",
+       x="Simulation Number", y="Burned Ratio") +
+  theme_minimal() +
+  scale_color_manual(values=colors) +  # 使用扩展的颜色
+  theme(axis.text=element_text(size=12), axis.title=element_text(size=14))
+
+# ----------------------------
+# 保存数据
+# ----------------------------
+burned_summary_fire <- burned_summary
+```
+
+### **Part 3: Analysis and Insights**
+
+```{r}
+# 加载必要的库
+library(ggplot2)
+library(dplyr)
+
+# 1. 检查所有数据框的列名和缺失值
+
+# 检查 burned_summary_wind 数据框的列名和缺失值
+cat("检查 burned_summary_wind 数据框：\n")
+str(burned_summary_wind)
+cat("列名：\n")
+print(names(burned_summary_wind))
+cat("缺失值数量：\n")
+print(sum(is.na(burned_summary_wind)))
+
+# 检查 burned_summary_dir 数据框的列名和缺失值
+cat("\n检查 burned_summary_dir 数据框：\n")
+str(burned_summary_dir)
+cat("列名：\n")
+print(names(burned_summary_dir))
+cat("缺失值数量：\n")
+print(sum(is.na(burned_summary_dir)))
+
+# 检查 burned_summary_ember 数据框的列名和缺失值
+cat("\n检查 burned_summary_ember 数据框：\n")
+str(burned_summary_ember)
+cat("列名：\n")
+print(names(burned_summary_ember))
+cat("缺失值数量：\n")
+print(sum(is.na(burned_summary_ember)))
+
+# 检查 alpha_beta_results 数据框的列名和缺失值
+cat("\n检查 alpha_beta_results 数据框：\n")
+str(alpha_beta_results)
+cat("列名：\n")
+print(names(alpha_beta_results))
+cat("缺失值数量：\n")
+print(sum(is.na(alpha_beta_results)))
+
+# 检查 burned_summary_fire 数据框的列名和缺失值
+cat("\n检查 burned_summary_fire 数据框：\n")
+str(burned_summary_fire)
+cat("列名：\n")
+print(names(burned_summary_fire))
+cat("缺失值数量：\n")
+print(sum(is.na(burned_summary_fire)))
+
+```
+
+```{r}
+library(ggplot2)
+
+# ----------------------------
+# 参数设置
+# ----------------------------
+N <- 60
+timesteps <- 7
+alpha_values <- c(0.2, 0.4, 0.6)  # 不同的 alpha 参数
+beta_values <- c(0.1, 0.3, 0.5)  # 不同的 beta 参数
+wind_strength_values <- c(10, 40, 70)  # 不同的风力强度
+phi_values <- c(0.1, 0.3, 0.5)  # 不同的消防概率
+gamma <- 0.1
+delta <- 0.05
+max_wind_range <- 6
+center <- N %/% 2
+num_simulations <- 50  # 设置模拟次数
+
+# 风向固定（东风）
+wind_dx <- 1
+wind_dy <- 0
+
+# ----------------------------
+# 生成邻居偏移函数（包含风向扩散范围）
+# ----------------------------
+generate_neighbors <- function(w, wind_dx, wind_dy){
+  offsets <- expand.grid(dx=-1:1, dy=-1:1)
+  offsets <- offsets[!(offsets$dx==0 & offsets$dy==0), ]
+  r_max <- min(max_wind_range, 1 + ceiling(w/20))
+  for(r in 2:r_max){
+    offsets <- rbind(offsets, data.frame(dx=r*wind_dx, dy=r*wind_dy))
+  }
+  offsets
+}
+
+# ----------------------------
+# 火灾传播函数（包含ember + 消防）
+# ----------------------------
+spread_fire_wind_firefighting <- function(X, alpha, beta, w, wind_dx, wind_dy, phi){
+  N <- nrow(X)
+  X_new <- X
+  logit_alpha <- log(alpha/(1-alpha))
+  neighbor_offsets <- generate_neighbors(w, wind_dx, wind_dy)
+  
+  for(i in 1:N){
+    for(j in 1:N){
+      if(X[i,j]==1){
+        # 消防扑灭
+        if(runif(1) < phi){
+          X_new[i,j] <- 2
+          next
+        }
+        for(n_idx in seq_len(nrow(neighbor_offsets))){
+          ni <- i + neighbor_offsets$dx[n_idx]
+          nj <- j + neighbor_offsets$dy[n_idx]
+          if(ni>=1 && ni<=N && nj>=1 && nj<=N && X[ni,nj]==2){
+            dx <- ni - i
+            dy <- nj - j
+            dot <- dx*wind_dx + dy*wind_dy
+            norm <- sqrt(dx^2 + dy^2) * sqrt(wind_dx^2 + wind_dy^2)
+            cos_theta <- if(norm==0) 0 else dot/norm
+            prob <- 1/(1 + exp(-(logit_alpha + gamma*w*cos_theta + delta*w)))
+            if(runif(1) < prob) X_new[ni,nj] <- 1
+          }
+        }
+        if(runif(1) < beta) X_new[i,j] <- 0
+      }
+    }
+  }
+  X_new
+}
+
+# ----------------------------
+# 模拟对比（控制变量，改变多组参数）
+# ----------------------------
+result_data <- data.frame()  # 用于存储每次模拟结果
+
+# 创建不同组合的场景
+param_combinations <- expand.grid(alpha=alpha_values, beta=beta_values, 
+                                  wind_strength=wind_strength_values, phi=phi_values)
+
+for(i in 1:nrow(param_combinations)){
+  params <- param_combinations[i,]
+  alpha <- params$alpha
+  beta <- params$beta
+  wind_strength <- params$wind_strength
+  phi <- params$phi
+  
+  burned_ratios <- numeric(num_simulations)  # 存储每次模拟的烧毁比例
+  
+  for(sim in 1:num_simulations){  # 多次模拟
+    X <- matrix(2, N, N)
+    fire_indices <- expand.grid(x=(center-1):(center+1), y=(center-1):(center+1))
+    for(k_idx in 1:nrow(fire_indices)) X[fire_indices$x[k_idx], fire_indices$y[k_idx]] <- 1
+    
+    for(t in 1:timesteps){
+      X <- spread_fire_wind_firefighting(X, alpha, beta, wind_strength, wind_dx, wind_dy, phi)
+    }
+    
+    # 记录每次模拟的烧毁比例
+    burned_ratios[sim] <- sum(X==0)/(N*N)
+  }
+  
+  # 将每组参数组合与对应的烧毁比汇总到结果数据框中
+  result_data <- rbind(result_data, data.frame(
+    alpha=alpha,
+    beta=beta,
+    wind_strength=wind_strength,
+    phi=phi,
+    burned_ratio=mean(burned_ratios)
+  ))
+}
+
+# ----------------------------
+# 根据烧毁比从高到低排序
+# ----------------------------
+result_data_sorted <- result_data[order(-result_data$burned_ratio), ]
+
+# ----------------------------
+# 在 R 中显示排序后的结果
+# ----------------------------
+print(result_data_sorted)
+
+# ----------------------------
+# 将排序后的结果储存为变量
+# ----------------------------
+burned_ratio_data_sorted <- result_data_sorted
+
+```
+
+```{r}
+# 多元线性回归
+model <- lm(burned_ratio ~ alpha + beta + wind_strength + phi, data = burned_ratio_data_sorted)
+
+# 输出回归结果
+summary(model)
+
+```
+
+```{r}
+# 残差提取
+residuals <- residuals(model)
+
+# 绘制 Q-Q 图
+qqnorm(residuals)
+qqline(residuals, col = "red")  # 添加参考线
+
+# 正态性检验（Shapiro-Wilk 检验）
+shapiro.test(residuals)
+
+```
+
+```{r}
+# 拟合值
+fitted_values <- fitted(model)
+
+# 绘制残差 vs 拟合值图
+plot(fitted_values, residuals, 
+     main = "Residuals vs Fitted Values", 
+     xlab = "Fitted Values", 
+     ylab = "Residuals")
+abline(h = 0, col = "red")
+
+```
+
+```{r}
+#install.packages("betareg")
+
+```
+
+```{r}
+library(betareg)
+
+# 缩放比例，避免0/1
+n <- nrow(burned_ratio_data_sorted)
+burned_ratio_data_sorted$burned_ratio_scaled <- 
+  (burned_ratio_data_sorted$burned_ratio * (n - 1) + 0.5) / n
+
+# Beta 回归
+model_beta <- betareg(burned_ratio_scaled ~ alpha + beta + wind_strength + phi,
+                      data = burned_ratio_data_sorted)
+
+summary(model_beta)
+
+# 残差图
+res <- residuals(model_beta, type="pearson")
+plot(fitted(model_beta), res, xlab="Fitted", ylab="Residuals")
+abline(h=0,col="red")
+
+```
