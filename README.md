@@ -1,13 +1,23 @@
-## 🏠 House Price Analysis
-
-### 📊 Feature Visualization
+# 🧠 Data Science Project
 
 <p align="center">
-  <img src="kc-house-prices-prediction/Images/1.png" width="49%">
-  <img src="kc-house-prices-prediction/Images/2.png" width="49%">
+  <img src="https://img.shields.io/badge/Python-blue?style=flat-square">
+  <img src="https://img.shields.io/badge/R-276DC3?style=flat-square&logo=r">
+  <img src="https://img.shields.io/badge/Data%20Analysis-green?style=flat-square">
+  <img src="https://img.shields.io/badge/Data%20Visualization-purple?style=flat-square">
 </p>
 
----
+
+<br>
+
+# 🏠 House Price Prediction
+
+### 📊 Visualization
+
+<p align="center">
+  <img src="kc-house-prices-prediction/Images/1.png" width="48%">
+  <img src="kc-house-prices-prediction/Images/2.png" width="48%">
+</p>
 
 ### 📈 Regression Analysis
 
@@ -15,11 +25,14 @@
   <img src="kc-house-prices-prediction/Images/3.png" width="70%">
 </p>
 
----
+<p align="center">
+  <i>Built predictive models to analyze key factors influencing housing prices.</i>
+</p>
 
-<br>
 
-## 🔥 Fire Simulation Analysis
+<br><br>
+
+# 🔥 Fire Spread Simulation (Python / R)
 
 ### 🚒 Simulation Overview
 
@@ -27,7 +40,10 @@
   <img src="Simulation/image/1.gif" width="60%">
 </p>
 
----
+<p align="center">
+  <i>Simulation of fire spread dynamics based on spatial and environmental variables.</i>
+</p>
+
 
 ### 📊 Exploratory Analysis
 
@@ -47,8 +63,6 @@
   <img src="Simulation/image/8.png" width="49%">
   <img src="Simulation/image/9.png" width="49%">
 </p>
-
----
 
 ### 📈 Regression Analysis
 
