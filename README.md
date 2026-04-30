@@ -29,7 +29,7 @@
 
 <br><br>
 
-# 🔥 Fire Spread Simulation (Python / R)
+# 🔥 Fire Spread Simulation
 
 ### 🚒 Simulation Overview
 
