@@ -1,4 +1,4 @@
-# 🧠 Data Science Project
+# 🧠 Data Science Project1
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-blue?style=flat-square">
