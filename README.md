@@ -7,7 +7,7 @@
   <img src="kc-house-prices-prediction/Images/2.png" width="49%">
 </p>
 
----
+-
 
 ### 📈 Regression Analysis
 
@@ -15,7 +15,7 @@
   <img src="kc-house-prices-prediction/Images/3.png" width="70%">
 </p>
 
----
+-
 
 # 🔥 Fire Simulation Analysis
 
@@ -25,7 +25,7 @@
   <img src="Simulation/image/1.gif" width="60%">
 </p>
 
----
+-
 
 ### 📊 Exploratory Analysis
 
@@ -46,7 +46,7 @@
   <img src="Simulation/image/9.png" width="49%">
 </p>
 
----
+-
 
 ### 📈 Regression Analysis
 
