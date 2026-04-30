@@ -38,7 +38,7 @@
 </p>
 
 <p align="center">
-  <i>Simulation of fire spread dynamics based on spatial and environmental variables.</i>
+  <i>Simulation of fire spread</i>
 </p>
 
 
