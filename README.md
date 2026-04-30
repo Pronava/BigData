@@ -37,11 +37,6 @@
   <img src="Simulation/image/1.gif" width="60%">
 </p>
 
-<p align="center">
-  <i>Simulation of fire spread</i>
-</p>
-
-
 ### 📊 Exploratory Analysis
 
 <p align="center">
