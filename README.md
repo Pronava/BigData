@@ -7,6 +7,27 @@
   <img src="https://img.shields.io/badge/Data%20Visualization-purple?style=flat-square">
 </p>
 
+# 📞 Telecom Customer Churn Analysis
+
+<p align="center">
+  <img src="tcc/image/1.png" width="48%">
+  <img src="tcc/image/2.png" width="48%">
+</p>
+
+<p align="center">
+  <img src="tcc/image/3.png" width="48%">
+  <img src="tcc/image/4.png" width="48%">
+</p>
+
+<p align="center">
+  <i>
+    Applied statistical analysis, machine learning models, and customer segmentation
+    techniques to identify churn drivers and support customer retention strategies.
+  </i>
+</p>
+
+<br><br>
+
 # 🏠 House Price Prediction
 
 ### 📊 Visualization
@@ -25,7 +46,6 @@
 <p align="center">
   <i>Built predictive models to analyze key factors influencing housing prices.</i>
 </p>
-
 
 <br><br>
 
